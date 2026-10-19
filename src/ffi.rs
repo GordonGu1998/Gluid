@@ -42,6 +42,16 @@ unsafe extern "C" {
         length: c_long,
     ) -> f64;
 
+    pub fn AbstractState_first_partial_deriv(
+        handle: c_long,
+        of: c_long,
+        wrt: c_long,
+        constant: c_long,
+        errcode: *mut c_long,
+        message: *mut c_char,
+        length: c_long,
+    ) -> f64;
+
     pub fn get_param_index(param: *const c_char) -> c_long;
 
     pub fn get_input_pair_index(pair: *const c_char) -> c_long;

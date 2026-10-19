@@ -19,9 +19,12 @@ CMake, no Python, no download at build time, and no dynamic library to ship or t
   `.dll` next to it and without a library path baked in.
 - **Reference-quality data.** Helmholtz equations of state (backend `HEOS`) for fluids such as
   nitrogen, carbon dioxide, methane, hydrogen, helium, water and air, addressed by CoolProp's names.
-- **Four input pairs, fourteen outputs**, all in SI units: pressure and temperature, enthalpy and
+- **Four input pairs, fifteen outputs**, all in SI units: pressure and temperature, enthalpy and
   pressure, pressure and quality, quality and temperature. Quality gives the saturation line and the
-  two-phase region.
+  two-phase region. The Prandtl number is an output (new in 0.2.0).
+- **First partial derivatives (new in 0.2.0).** Any derivative among density, enthalpy, pressure and
+  temperature of a single-phase state, for example the density against the pressure at constant
+  enthalpy. A two-phase state, where CoolProp returns a wrong value, is refused.
 - **Thread safe.** Each state is owned by one thread, any number of states run in parallel, and the
   results are bit-identical to a single-threaded run.
 - **Honest errors.** A failed call returns CoolProp's own message as a `String`; an output that is
@@ -29,13 +32,45 @@ CMake, no Python, no download at build time, and no dynamic library to ship or t
 - **Checked against CMake.** On a grid of 2026 states of six fluids and in a full seal-simulation
   workload, every result is bit-identical to a CoolProp 8.0.0 built with CMake from the same commit.
 
+## Gluid and rfluids
+
+[rfluids](https://github.com/portyanikhin/rfluids) is the other CoolProp crate for Rust. It is
+broader: it covers mixtures, humid air and incompressible fluids. Gluid is narrower on purpose, and
+it differs in how CoolProp reaches your program and in what is checked:
+
+| | Gluid | rfluids 0.6 |
+|---|---|---|
+| CoolProp comes as | vendored source, compiled by `cargo build` | prebuilt dynamic libraries |
+| Linking | static, one executable | dynamic, the library is copied next to the build |
+| To build | a C++17 compiler | nothing extra (libclang only to regenerate bindings) |
+| To ship | the executable | the executable and the CoolProp library |
+| Source of the numbers | pinned CoolProp commit in the repository | binaries as shipped |
+| Checked against | a CMake build of the same commit, bit for bit | not stated |
+| Threads | `Send` states, documented locks, parallel equals serial | `Send`, not `Sync`, no guarantee stated |
+| Partial derivatives | `get_derivative(of, wrt, constant)` | no general method on `Fluid` |
+
+What Gluid adds beyond the table:
+
+- **No CoolProp library to lose at run time.** The executable needs no CoolProp `.dylib`, `.so` or
+  `.dll` next to it and holds no library path of the build machine.
+- **You can read what runs.** The 66 C++ files and the fluid data are in the repository, and the
+  build is the same on macOS, Windows (MSVC) and Linux.
+- **Derivatives without finite differences.** The density against the pressure at constant
+  enthalpy costs about 0.1 microseconds and agrees with its thermodynamic identity to a few ulps.
+- **A stable surface.** `Pair`, `Output` and `Variable` are `#[non_exhaustive]`, versions follow
+  Cargo's SemVer reading, and the minimum Rust version is 1.85.
+
+Choose rfluids instead if you need mixtures, humid air, incompressible fluids, the IF97 backend,
+entropy or the speed of sound today, or a Windows or Linux build on ARM, which Gluid has not tested
+yet. The table reflects the public documentation of rfluids 0.6.0.
+
 ## Installation
 
 Add Gluid to `Cargo.toml`:
 
 ```toml
 [dependencies]
-gluid = { git = "https://github.com/GordonGu1998/Gluid", tag = "v0.1.0" }
+gluid = { git = "https://github.com/GordonGu1998/Gluid", tag = "v0.2.0" }
 ```
 
 The first build compiles about 66 C++ files: roughly 30 seconds on 11 cores and a few minutes on
@@ -103,7 +138,25 @@ for handle in handles {
 }
 ```
 
-Run `cargo run --example properties` to print a table.
+A partial derivative names the variable it is of, with respect to, and at constant. It is refused
+for a two-phase state, where CoolProp has no single-phase derivative:
+
+```rust
+use gluid::{AbstractState, Pair, Variable};
+
+let mut nitrogen = AbstractState::new("Nitrogen").unwrap();
+nitrogen.set_state(Pair::PressureTemperature, 2.0e6, 300.0).unwrap();
+
+// Density against pressure at constant enthalpy, in s2/m2.
+let slope = nitrogen
+    .get_derivative(Variable::Density, Variable::Pressure, Variable::Enthalpy)
+    .unwrap();
+assert!(slope > 0.0);
+```
+
+Run `cargo run --example properties` to print every feature: the outputs including the Prandtl
+number, saturation, the enthalpy flash, partial derivatives checked against their identity, fixed
+points, error messages, copies on four threads and the fluid JSON.
 
 ## API overview
 
@@ -112,6 +165,7 @@ Run `cargo run --example properties` to print a table.
 | `AbstractState::new(fluid)` | Create the state of a pure fluid (backend `HEOS`) |
 | `AbstractState::set_state(pair, a, b)` | Update from two inputs in the order of the pair |
 | `AbstractState::get_output(output)` | Read an output of the current state |
+| `AbstractState::get_derivative(of, wrt, constant)` | First partial derivative, single phase |
 | `AbstractState::clone()` | New state with the same last update |
 | `get_fluid_json(fluid)` | JSON description of a fluid (`None` if unknown) |
 | `COOLPROP_VERSION` | Version of the linked CoolProp (`"8.0.0"`) |
@@ -134,6 +188,17 @@ Run `cargo run --example properties` to print a table.
 | `Pressure`, `CriticalPressure`, `TriplePressure` | Pa |
 | `IsothermalCompressibility` | 1/Pa |
 | `IsobaricExpansion` | 1/K |
+| `Prandtl` | none |
+
+| `Variable` | Unit |
+|---|---|
+| `Density` | kg/m3 |
+| `Enthalpy` | J/kg |
+| `Pressure` | Pa |
+| `Temperature` | K |
+
+`Pair`, `Output` and `Variable` are `#[non_exhaustive]`: a later version can add entries without a
+breaking change, so a `match` on them needs a wildcard arm.
 
 An output that was an input of the last update is returned exactly as it was given.
 
@@ -151,8 +216,8 @@ An output that was an input of the last update is returned exactly as it was giv
 
 - Pure and pseudo-pure fluids with the backend `HEOS` only: no mixtures, no humid air, no
   incompressible liquids, no tabular backends, and no REFPROP (its library is proprietary).
-- Four input pairs and the fourteen outputs above. Partial derivatives other than the two
-  compressibility outputs are not exposed yet.
+- Four input pairs and the fifteen outputs above. Partial derivatives are first order, among the
+  four variables above, and for single-phase states only.
 - SI units as plain `f64`; there are no unit types.
 
 ## Build environment

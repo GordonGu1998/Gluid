@@ -1,6 +1,6 @@
 [package]
 name = "gluid"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.85"
 description = "Fluid properties from CoolProp 8.0.0, compiled and linked statically by cargo build"
@@ -12,7 +12,7 @@ categories = ["science", "api-bindings"]
 links = "CoolProp"
 build = "build.rs"
 include = [
-    "build.rs", "src", "tests", "vendor", "data",
+    "build.rs", "src", "tests", "examples", "vendor", "data",
     "README.md", "LICENSE", "THIRD_PARTY_NOTICES.md", "CHANGELOG.md",
 ]
 

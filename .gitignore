@@ -6,3 +6,6 @@
 !.vscode/settings.json
 .idea/
 __pycache__/
+/CLAUDE.md
+/MASTERPLAN.md
+/handoff.md

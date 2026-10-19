@@ -5,7 +5,7 @@
 use std::thread;
 
 // Import the Interface to Test=====================================================================
-use gluid::{AbstractState, COOLPROP_VERSION, Output, Pair, get_fluid_json};
+use gluid::{AbstractState, COOLPROP_VERSION, Output, Pair, Variable, get_fluid_json};
 
 //==================================================================================================
 // Function Name: get_nitrogen
@@ -148,4 +148,191 @@ fn states_work_on_threads_at_once() {
     for handle in handles {
         assert_eq!(handle.join().unwrap(), expected);
     }
+}
+
+//==================================================================================================
+// Function Name: get_states
+//   Description: Create single phase states of four fluids from gas to dense
+//     Edit Date: Oct 19th, 2026.
+//==================================================================================================
+fn get_states() -> Vec<AbstractState> {
+    [
+        ("Nitrogen", 2.0e6, 300.0),
+        ("CO2", 3.0e6, 320.0),
+        ("CO2", 1.2e7, 305.0),
+        ("Air", 5.0e5, 400.0),
+    ]
+    .into_iter()
+    .map(|(fluid, pressure, temperature)| {
+        let mut state = AbstractState::new(fluid).expect("the fluid exists");
+        state
+            .set_state(Pair::PressureTemperature, pressure, temperature)
+            .expect("the state is valid");
+        state
+    })
+    .collect()
+}
+
+//==================================================================================================
+// Function Name: density_derivative_matches_the_identity
+//   Description: Check the density slope at constant enthalpy against the thermodynamic identity
+//     Edit Date: Oct 19th, 2026.
+//==================================================================================================
+#[test]
+fn density_derivative_matches_the_identity() {
+    for mut state in get_states() {
+        let rho = state.get_output(Output::Density).unwrap();
+        let kappa = state.get_output(Output::IsothermalCompressibility).unwrap();
+        let beta = state.get_output(Output::IsobaricExpansion).unwrap();
+        let c_p = state.get_output(Output::SpecificHeat).unwrap();
+        let t = state.get_output(Output::Temperature).unwrap();
+        let identity = rho * kappa + beta * (1.0 - t * beta) / c_p;
+        let derivative = state
+            .get_derivative(Variable::Density, Variable::Pressure, Variable::Enthalpy)
+            .unwrap();
+        assert!(
+            (derivative / identity - 1.0).abs() < 1e-8,
+            "{derivative} {identity}"
+        );
+    }
+}
+
+//==================================================================================================
+// Function Name: enthalpy_derivatives_match_the_closed_forms
+//   Description: Check the density and temperature slopes with the enthalpy at constant pressure
+//     Edit Date: Oct 19th, 2026.
+//==================================================================================================
+#[test]
+fn enthalpy_derivatives_match_the_closed_forms() {
+    for mut state in get_states() {
+        let rho = state.get_output(Output::Density).unwrap();
+        let beta = state.get_output(Output::IsobaricExpansion).unwrap();
+        let c_p = state.get_output(Output::SpecificHeat).unwrap();
+        let rho_h = state
+            .get_derivative(Variable::Density, Variable::Enthalpy, Variable::Pressure)
+            .unwrap();
+        let t_h = state
+            .get_derivative(
+                Variable::Temperature,
+                Variable::Enthalpy,
+                Variable::Pressure,
+            )
+            .unwrap();
+        assert!((rho_h / (-rho * beta / c_p) - 1.0).abs() < 1e-8, "{rho_h}");
+        assert!((t_h * c_p - 1.0).abs() < 1e-8, "{t_h}");
+    }
+}
+
+//==================================================================================================
+// Function Name: density_derivative_matches_finite_differences
+//   Description: Check both density slopes against central differences of flashed states
+//     Edit Date: Oct 19th, 2026.
+//==================================================================================================
+#[test]
+fn density_derivative_matches_finite_differences() {
+    for mut state in get_states() {
+        let p = state.get_output(Output::Pressure).unwrap();
+        let h = state.get_output(Output::Enthalpy).unwrap();
+        let (dp, dh) = (1.0e-4 * p, 1.0);
+        let mut read = |pressure: f64, enthalpy: f64| {
+            state
+                .set_state(Pair::EnthalpyPressure, enthalpy, pressure)
+                .unwrap();
+            state.get_output(Output::Density).unwrap()
+        };
+        let by_pressure = (read(p + dp, h) - read(p - dp, h)) / (2.0 * dp);
+        let by_enthalpy = (read(p, h + dh) - read(p, h - dh)) / (2.0 * dh);
+        state.set_state(Pair::EnthalpyPressure, h, p).unwrap();
+        let rho_p = state
+            .get_derivative(Variable::Density, Variable::Pressure, Variable::Enthalpy)
+            .unwrap();
+        let rho_h = state
+            .get_derivative(Variable::Density, Variable::Enthalpy, Variable::Pressure)
+            .unwrap();
+        assert!(
+            (rho_p / by_pressure - 1.0).abs() < 1e-4,
+            "{rho_p} {by_pressure}"
+        );
+        assert!(
+            (rho_h / by_enthalpy - 1.0).abs() < 1e-4,
+            "{rho_h} {by_enthalpy}"
+        );
+    }
+}
+
+//==================================================================================================
+// Function Name: derivative_refuses_two_phase_and_repeated_variables
+//   Description: Check that a two phase state and a repeated variable are refused
+//     Edit Date: Oct 19th, 2026.
+//==================================================================================================
+#[test]
+fn derivative_refuses_two_phase_and_repeated_variables() {
+    let mut state = AbstractState::new("CO2").unwrap();
+    state.set_state(Pair::PressureQuality, 5.0e6, 0.5).unwrap();
+    let error = state
+        .get_derivative(Variable::Density, Variable::Pressure, Variable::Enthalpy)
+        .unwrap_err();
+    assert!(error.contains("two-phase"), "{error}");
+
+    let mut state = get_nitrogen();
+    let error = state
+        .get_derivative(Variable::Density, Variable::Pressure, Variable::Pressure)
+        .unwrap_err();
+    assert!(error.contains("different"), "{error}");
+}
+
+//==================================================================================================
+// Function Name: prandtl_number_matches_its_definition
+//   Description: Check the Prandtl number against the heat capacity viscosity and conductivity
+//     Edit Date: Oct 19th, 2026.
+//==================================================================================================
+#[test]
+fn prandtl_number_matches_its_definition() {
+    for mut state in get_states() {
+        let c_p = state.get_output(Output::SpecificHeat).unwrap();
+        let mu = state.get_output(Output::Viscosity).unwrap();
+        let k = state.get_output(Output::Conductivity).unwrap();
+        let prandtl = state.get_output(Output::Prandtl).unwrap();
+        assert!((prandtl / (c_p * mu / k) - 1.0).abs() < 1e-10, "{prandtl}");
+    }
+}
+
+//==================================================================================================
+// Function Name: carbon_dioxide_fixed_points
+//   Description: Check the critical and triple points of carbon dioxide
+//     Edit Date: Oct 19th, 2026.
+//==================================================================================================
+#[test]
+fn carbon_dioxide_fixed_points() {
+    let mut state = AbstractState::new("CO2").unwrap();
+    for (output, expected) in [
+        (Output::CriticalTemperature, 304.1282),
+        (Output::TripleTemperature, 216.592),
+        (Output::MinTemperature, 216.592),
+        (Output::TriplePressure, 517_964.0),
+    ] {
+        let value = state.get_output(output).unwrap();
+        assert!((value / expected - 1.0).abs() < 1e-5, "{output:?} {value}");
+    }
+}
+
+//==================================================================================================
+// Function Name: derivative_follows_an_enthalpy_flash
+//   Description: Check that a derivative after an enthalpy and pressure update matches the start
+//     Edit Date: Oct 19th, 2026.
+//==================================================================================================
+#[test]
+fn derivative_follows_an_enthalpy_flash() {
+    let mut state = get_nitrogen();
+    let expected = state
+        .get_derivative(Variable::Density, Variable::Pressure, Variable::Enthalpy)
+        .unwrap();
+    let enthalpy = state.get_output(Output::Enthalpy).unwrap();
+    state
+        .set_state(Pair::EnthalpyPressure, enthalpy, 2.0e6)
+        .unwrap();
+    let derivative = state
+        .get_derivative(Variable::Density, Variable::Pressure, Variable::Enthalpy)
+        .unwrap();
+    assert!((derivative / expected - 1.0).abs() < 1e-8, "{derivative}");
 }

@@ -15,8 +15,9 @@ use std::sync::{OnceLock, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard
 
 // Import the Raw Interface of the Static CoolProp Library==========================================
 use crate::ffi::{
-    AbstractState_factory, AbstractState_free, AbstractState_keyed_output, AbstractState_update,
-    get_fluid_param_string, get_fluid_param_string_len, get_input_pair_index, get_param_index,
+    AbstractState_factory, AbstractState_first_partial_deriv, AbstractState_free,
+    AbstractState_keyed_output, AbstractState_update, get_fluid_param_string,
+    get_fluid_param_string_len, get_input_pair_index, get_param_index,
 };
 
 //==================================================================================================
@@ -35,7 +36,7 @@ const BACKEND: &CStr = c"HEOS";
 const PAIR_NAME: [&CStr; 4] = [c"PT_INPUTS", c"HmassP_INPUTS", c"PQ_INPUTS", c"QT_INPUTS"];
 
 // Define the Names of the Outputs in the Order of the Output Enumeration===========================
-const OUTPUT_NAME: [&CStr; 14] = [
+const OUTPUT_NAME: [&CStr; 15] = [
     c"Dmass",
     c"Hmass",
     c"Cpmass",
@@ -50,7 +51,14 @@ const OUTPUT_NAME: [&CStr; 14] = [
     c"Tmin",
     c"Ttriple",
     c"ptriple",
+    c"Prandtl",
 ];
+
+// Define the Name of the Phase Index That Tells a Two Phase State==================================
+const PHASE_NAME: &CStr = c"Phase";
+
+// Define the Phase Index of a Two Phase State as the Library Returns It============================
+const PHASE_TWO_PHASE: f64 = 6.0;
 
 //==================================================================================================
 // Synchronization
@@ -140,6 +148,7 @@ impl ErrorBuffer {
 // Declare the Input Pairs Taken by an Update of a State============================================
 /// Input pair of an update, with the two values given in the order of the name.
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[non_exhaustive]
 pub enum Pair {
     // Define Pressure and Temperature in This Order================================================
     PressureTemperature,
@@ -157,6 +166,7 @@ pub enum Pair {
 // Declare the Outputs Read from a State============================================================
 /// Output read from a state, in SI units.
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[non_exhaustive]
 pub enum Output {
     // Define the Density in Kilogram per Cubic Meter===============================================
     Density,
@@ -199,6 +209,43 @@ pub enum Output {
 
     // Define the Triple Pressure in Pascal=========================================================
     TriplePressure,
+
+    // Define the Prandtl Number without a Unit=====================================================
+    Prandtl,
+}
+
+// Declare the Variables of a Partial Derivative====================================================
+/// Variable of a state that a partial derivative is taken of, with respect to, or holds constant.
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[non_exhaustive]
+pub enum Variable {
+    // Define the Density in Kilogram per Cubic Meter===============================================
+    Density,
+
+    // Define the Specific Enthalpy in Joule per Kilogram===========================================
+    Enthalpy,
+
+    // Define the Pressure in Pascal================================================================
+    Pressure,
+
+    // Define the Temperature in Kelvin=============================================================
+    Temperature,
+}
+
+impl Variable {
+    //==============================================================================================
+    // Function Name: get_output
+    //   Description: Get the output that reads the variable from a state
+    //     Edit Date: Oct 19th, 2026.
+    //==============================================================================================
+    fn get_output(self) -> Output {
+        match self {
+            Self::Density => Output::Density,
+            Self::Enthalpy => Output::Enthalpy,
+            Self::Pressure => Output::Pressure,
+            Self::Temperature => Output::Temperature,
+        }
+    }
 }
 
 impl Output {
@@ -222,6 +269,9 @@ struct Keys {
 
     // Define the Keys of the Outputs===============================================================
     output: [c_long; OUTPUT_NAME.len()],
+
+    // Define the Key of the Phase Index============================================================
+    phase: c_long,
 }
 
 //==================================================================================================
@@ -237,6 +287,7 @@ fn get_keys() -> Result<&'static Keys, String> {
         let mut keys = Keys {
             pair: [0; PAIR_NAME.len()],
             output: [0; OUTPUT_NAME.len()],
+            phase: 0,
         };
         for (key, name) in keys.pair.iter_mut().zip(PAIR_NAME) {
             // Call the Library with a Name That Ends with a Zero===================================
@@ -254,6 +305,11 @@ fn get_keys() -> Result<&'static Keys, String> {
             if *key < 0 {
                 return Err(format!("CoolProp has no output {}", name.to_string_lossy()));
             }
+        }
+        // Call the Library with a Name That Ends with a Zero=======================================
+        keys.phase = unsafe { get_param_index(PHASE_NAME.as_ptr()) };
+        if keys.phase < 0 {
+            return Err("CoolProp has no phase index".to_string());
         }
         Ok(keys)
     });
@@ -408,12 +464,82 @@ impl AbstractState {
     }
 
     //==============================================================================================
+    // Function Name: get_derivative
+    //   Description: Read a first partial derivative of the current single phase state
+    //     Edit Date: Oct 19th, 2026.
+    //==============================================================================================
+    /// Read the partial derivative of `of` with respect to `wrt` at constant `constant`, in SI
+    /// units. The three variables must differ. A two-phase state is refused, because CoolProp
+    /// returns a wrong value there; the derivative also jumps across the saturation lines.
+    pub fn get_derivative(
+        &mut self,
+        of: Variable,
+        wrt: Variable,
+        constant: Variable,
+    ) -> Result<f64, String> {
+        // Refuse Variables That Repeat=============================================================
+        if of == wrt || of == constant || wrt == constant {
+            return Err(format!(
+                "The derivative of {of:?} with respect to {wrt:?} at constant {constant:?} \
+                 needs three different variables"
+            ));
+        }
+
+        // Refuse a Two Phase State=================================================================
+        let keys = get_keys()?;
+        if self.get_keyed(keys.phase)? == PHASE_TWO_PHASE {
+            return Err("CoolProp has no single phase derivative of a two-phase state".to_string());
+        }
+
+        // Read the Derivative under the Shared Lock================================================
+        let [of_key, wrt_key, constant_key] =
+            [of, wrt, constant].map(|variable| keys.output[variable.get_output() as usize]);
+        let mut buffer = ErrorBuffer::new();
+        let (code, message, length) = buffer.get_parts();
+        let value = {
+            let _guard = get_shared();
+            let handle = self.handle;
+            // Call the Library with a Live Handle and with Pointers into the Buffer================
+            unsafe {
+                AbstractState_first_partial_deriv(
+                    handle,
+                    of_key,
+                    wrt_key,
+                    constant_key,
+                    code,
+                    message,
+                    length,
+                )
+            }
+        };
+        buffer.get_result()?;
+
+        // Return the Value Only If It Is a Number==================================================
+        if value.is_finite() {
+            Ok(value)
+        } else {
+            Err(format!(
+                "CoolProp returned no valid value {value} for the derivative of {of:?}"
+            ))
+        }
+    }
+
+    //==============================================================================================
     // Function Name: get_computed
     //   Description: Read an output of the current state from the library under the shared lock
     //     Edit Date: Oct 15th, 2026.
     //==============================================================================================
     fn get_computed(&mut self, output: Output) -> Result<f64, String> {
         let key = get_keys()?.output[output as usize];
+        self.get_keyed(key)
+    }
+
+    //==============================================================================================
+    // Function Name: get_keyed
+    //   Description: Read a parameter of the current state by its key under the shared lock
+    //     Edit Date: Oct 19th, 2026.
+    //==============================================================================================
+    fn get_keyed(&mut self, key: c_long) -> Result<f64, String> {
         let mut buffer = ErrorBuffer::new();
         let (code, message, length) = buffer.get_parts();
         let value = {
