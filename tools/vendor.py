@@ -40,17 +40,33 @@ DATA = [
     "pcsaft/mixture_binary_pairs_pcsaft.json",
 ]
 
+# The compile commands run again for other platforms: clang with their target and the macros that
+# their standard library defines. Missing system headers are skipped (-MG), so only the headers of
+# CoolProp and its dependencies are collected. Visual Studio defines no __clang__, so the Windows
+# targets run a second time without it to take the paths that cl.exe takes.
+WINDOWS = ["-fms-compatibility", "-fms-compatibility-version=19.44", "-fms-extensions",
+           "-D_CPPLIB_VER=650", "-D_MSVC_STL_VERSION=143", "-ferror-limit=0"]
+LINUX = ["-D__GLIBCXX__=20240101"]
+OTHER_PLATFORMS = [
+    ["--target=x86_64-pc-windows-msvc"] + WINDOWS,
+    ["--target=x86_64-pc-windows-msvc", "-U__clang__"] + WINDOWS,
+    ["--target=aarch64-pc-windows-msvc"] + WINDOWS,
+    ["--target=aarch64-pc-windows-msvc", "-U__clang__"] + WINDOWS,
+    ["--target=x86_64-unknown-linux-gnu"] + LINUX,
+    ["--target=aarch64-unknown-linux-gnu"] + LINUX,
+]
+
 # Dependency, folder of the CPM cache, include root inside it, whole folders besides the closure,
 # license files beside the include root. Whole folders hold what only other platforms read.
 DEPENDENCIES = [
     ("boost", "boost_headers", "", [
         "boost/config", "boost/predef", "boost/core", "boost/detail", "boost/utility",
-        "boost/assert", "boost/type_traits"], ["LICENSE"]),
+        "boost/assert", "boost/type_traits", "boost/mpl/aux_/preprocessed"], ["LICENSE"]),
     ("msgpack", "msgpack-c", "include", ["msgpack/predef"],
      ["COPYING", "LICENSE_1_0.txt", "NOTICE"]),
     ("fmt", "fmt", "include", ["fmt"], ["LICENSE"]),
     ("json", "nlohmann_json", "include", ["nlohmann"], ["LICENSE.MIT"]),
-    ("valijson", "valijson", "include", ["valijson"], ["LICENSE"]),
+    ("valijson", "valijson", "include", ["valijson", "compat"], ["LICENSE"]),
     ("if97", "if97", "", [], ["LICENSE"]),
     ("refprop_headers", "refprop_headers", "", [], ["LICENSE"]),
     ("eigen", "eigen", "", ["Eigen/src/Core"],
@@ -84,6 +100,34 @@ def run_cmake(checkout, work):
     return build
 
 
+def get_headers(command, directory, strict=True):
+    """Run the preprocessor with -M and return the paths of the files it read.
+
+    A strict run must succeed. The runs for other platforms may report errors from macros that
+    only the preprocessor of Visual Studio accepts, and still list the files they read.
+    """
+    done = subprocess.run(command + ["-M"], check=strict, capture_output=True, text=True,
+                          cwd=directory)
+    if ": " not in done.stdout:
+        sys.exit(f"error: no dependencies listed for {command[-1]}\n{done.stderr[-2000:]}")
+    names = done.stdout.replace("\\\n", " ").split(": ", 1)[1].split()
+    return {Path(name).resolve() for name in names}
+
+
+def get_other_command(command, platform):
+    """Turn the compile command of this machine into one for another platform."""
+    other = [shutil.which("clang++") or "c++"]
+    skip = False
+    for word in command[1:]:
+        if skip:
+            skip = False
+        elif word in ("-arch", "-isysroot"):
+            skip = True
+        elif not word.startswith("-mmacosx-version-min"):
+            other.append(word)
+    return other + platform + ["-MG"]
+
+
 def get_closure(build):
     closure = set()
     sources = []
@@ -99,10 +143,10 @@ def get_closure(build):
             elif word != "-c":
                 command.append(word)
         sources.append(Path(entry["file"]).resolve())
-        text = subprocess.run(command + ["-M"], check=True, capture_output=True, text=True,
-                              cwd=entry["directory"]).stdout
-        names = text.replace("\\\n", " ").split(": ", 1)[1].split()
-        closure.update(Path(name).resolve() for name in names)
+        closure |= get_headers(command, entry["directory"])
+        for platform in OTHER_PLATFORMS:
+            other = get_other_command(command, platform)
+            closure |= get_headers(other, entry["directory"], strict=False)
     return closure, sources
 
 

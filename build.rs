@@ -215,6 +215,7 @@ fn main() {
     let is_msvc = build.get_compiler().is_like_msvc();
     if is_msvc {
         build
+            .flag("/EHsc")
             .flag("/bigobj")
             .flag("/utf-8")
             .define("_CRT_SECURE_NO_WARNINGS", None);
