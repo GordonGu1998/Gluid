@@ -143,8 +143,9 @@ An output that was an input of the last update is returned exactly as it was giv
 |---|---|
 | macOS arm64 | tested |
 | macOS x86_64 | tested (Rosetta 2) |
-| Windows x64 (MSVC) | not tested yet |
-| Linux x64 (GCC) | not tested yet |
+| Windows x64 (MSVC) | tested by CI |
+| Linux x64 (GCC) | tested by CI |
+| Windows and Linux on ARM | not tested yet |
 
 ## Limitations
 
