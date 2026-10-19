@@ -1,0 +1,20 @@
+[package]
+name = "gluid"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "Fluid properties from CoolProp 8.0.0, compiled and linked statically by cargo build"
+license = "MIT AND MPL-2.0 AND BSL-1.0 AND BSD-2-Clause AND Unlicense"
+repository = "https://github.com/GordonGu1998/Gluid"
+readme = "README.md"
+keywords = ["coolprop", "thermodynamics", "fluid", "properties", "equation-of-state"]
+categories = ["science", "api-bindings"]
+links = "CoolProp"
+build = "build.rs"
+include = [
+    "build.rs", "src", "tests", "vendor", "data",
+    "README.md", "LICENSE", "THIRD_PARTY_NOTICES.md", "CHANGELOG.md",
+]
+
+[build-dependencies]
+cc = { version = "1.2", features = ["parallel"] }

@@ -1,0 +1,40 @@
+# Test Gluid on Linux and Windows. macOS is tested by hand. Runs by hand, on the branches ci/** and
+# on pull requests, never on every push to main.
+name: CI
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["ci/**"]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain pinned by rust-toolchain.toml
+        run: rustc --version
+      - name: Format
+        if: matrix.os == 'ubuntu-latest'
+        run: cargo fmt --check
+      - name: Clippy
+        if: matrix.os == 'ubuntu-latest'
+        run: cargo clippy --all-targets -- -D warnings
+      - name: Test
+        run: cargo test
+      - name: Example
+        run: cargo run --example properties

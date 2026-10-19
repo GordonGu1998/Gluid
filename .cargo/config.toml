@@ -1,0 +1,7 @@
+# Set the Lowest macOS the C++ Objects and the Executables Run On=================================
+[env]
+MACOSX_DEPLOYMENT_TARGET = "12.0"
+
+# Link the C Runtime into the Windows Executables so No Redistributable Is Needed=================
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

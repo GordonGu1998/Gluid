@@ -1,0 +1,6 @@
+# Pin the Rust toolchain so every machine builds with the same compiler, clippy and rustfmt.
+# Change the version here on purpose, then re-verify on all platforms.
+[toolchain]
+channel = "1.99.0"
+profile = "minimal"
+components = ["clippy", "rustfmt"]
