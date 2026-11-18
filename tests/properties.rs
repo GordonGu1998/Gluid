@@ -282,6 +282,72 @@ fn derivative_refuses_two_phase_and_repeated_variables() {
 }
 
 //==================================================================================================
+// Function Name: get_mixture_density
+//   Description: Blend the saturated densities of a fluid at a pressure and an enthalpy
+//     Edit Date: Nov 18th, 2026.
+//==================================================================================================
+fn get_mixture_density(fluid: &str, pressure: f64, enthalpy: f64) -> f64 {
+    let mut state = AbstractState::new(fluid).expect("the fluid exists");
+    let mut get_saturated = |quality: f64| {
+        state
+            .set_state(Pair::PressureQuality, pressure, quality)
+            .unwrap();
+        (
+            state.get_output(Output::Enthalpy).unwrap(),
+            state.get_output(Output::Density).unwrap(),
+        )
+    };
+    let (h_liquid, rho_liquid) = get_saturated(0.0);
+    let (h_vapor, rho_vapor) = get_saturated(1.0);
+    let quality = (enthalpy - h_liquid) / (h_vapor - h_liquid);
+    1.0 / (quality / rho_vapor + (1.0 - quality) / rho_liquid)
+}
+
+//==================================================================================================
+// Function Name: two_phase_density_derivative_matches_mixture_slope
+//   Description: Check the two-phase slope against central differences of the mixture density
+//     Edit Date: Nov 18th, 2026.
+//==================================================================================================
+#[test]
+fn two_phase_density_derivative_matches_mixture_slope() {
+    for (fluid, pressure) in [
+        ("Water", 2.0e5),
+        ("Nitrogen", 5.0e5),
+        ("CO2", 5.0e6),
+        ("R134a", 8.0e5),
+    ] {
+        let mut state = AbstractState::new(fluid).unwrap();
+        for quality in [0.01, 0.5, 0.99] {
+            state
+                .set_state(Pair::PressureQuality, pressure, quality)
+                .unwrap();
+            let enthalpy = state.get_output(Output::Enthalpy).unwrap();
+            let slope = state.get_two_phase_density_derivative().unwrap();
+            let step = 1.0e-4 * pressure;
+            let reference = (get_mixture_density(fluid, pressure + step, enthalpy)
+                - get_mixture_density(fluid, pressure - step, enthalpy))
+                / (2.0 * step);
+            assert!(
+                (slope / reference - 1.0).abs() < 1e-5,
+                "{fluid} {quality} {slope} {reference}"
+            );
+        }
+    }
+}
+
+//==================================================================================================
+// Function Name: two_phase_density_derivative_refuses_a_single_phase_state
+//   Description: Check that a single phase state is refused by the two-phase slope
+//     Edit Date: Nov 18th, 2026.
+//==================================================================================================
+#[test]
+fn two_phase_density_derivative_refuses_a_single_phase_state() {
+    let mut state = get_nitrogen();
+    let error = state.get_two_phase_density_derivative().unwrap_err();
+    assert!(error.contains("not two-phase"), "{error}");
+}
+
+//==================================================================================================
 // Function Name: prandtl_number_matches_its_definition
 //   Description: Check the Prandtl number against the heat capacity viscosity and conductivity
 //     Edit Date: Oct 19th, 2026.

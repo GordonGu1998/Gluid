@@ -15,8 +15,8 @@ use std::sync::{OnceLock, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard
 
 // Import the Raw Interface of the Static CoolProp Library==========================================
 use crate::ffi::{
-    AbstractState_factory, AbstractState_first_partial_deriv, AbstractState_free,
-    AbstractState_keyed_output, AbstractState_update, get_fluid_param_string,
+    AbstractState_factory, AbstractState_first_partial_deriv, AbstractState_first_two_phase_deriv,
+    AbstractState_free, AbstractState_keyed_output, AbstractState_update, get_fluid_param_string,
     get_fluid_param_string_len, get_input_pair_index, get_param_index,
 };
 
@@ -470,7 +470,8 @@ impl AbstractState {
     //==============================================================================================
     /// Read the partial derivative of `of` with respect to `wrt` at constant `constant`, in SI
     /// units. The three variables must differ. A two-phase state is refused, because CoolProp
-    /// returns a wrong value there; the derivative also jumps across the saturation lines.
+    /// returns a wrong value there; the derivative also jumps across the saturation lines. Use
+    /// [`AbstractState::get_two_phase_density_derivative`] for the density slope of that state.
     pub fn get_derivative(
         &mut self,
         of: Variable,
@@ -520,6 +521,59 @@ impl AbstractState {
         } else {
             Err(format!(
                 "CoolProp returned no valid value {value} for the derivative of {of:?}"
+            ))
+        }
+    }
+
+    //==============================================================================================
+    // Function Name: get_two_phase_density_derivative
+    //   Description: Read the density slope at constant enthalpy of the current two-phase state
+    //     Edit Date: Nov 18th, 2026.
+    //==============================================================================================
+    /// Read d(density)/d(pressure) at constant enthalpy of the current two-phase state in s2/m2,
+    /// for the homogeneous mixture of the saturated liquid and vapor. Set the state by pressure
+    /// and quality, because an enthalpy and pressure flash fails below the triple pressure. Any
+    /// other state is refused; [`AbstractState::get_derivative`] reads the single-phase slope.
+    pub fn get_two_phase_density_derivative(&mut self) -> Result<f64, String> {
+        // Refuse a State That Is Not Two Phase=====================================================
+        let keys = get_keys()?;
+        if self.get_keyed(keys.phase)? != PHASE_TWO_PHASE {
+            return Err(
+                "The state is not two-phase; use get_derivative for a single phase state"
+                    .to_string(),
+            );
+        }
+
+        // Read the Derivative under the Shared Lock================================================
+        let [of_key, wrt_key, constant_key] =
+            [Variable::Density, Variable::Pressure, Variable::Enthalpy]
+                .map(|variable| keys.output[variable.get_output() as usize]);
+        let mut buffer = ErrorBuffer::new();
+        let (code, message, length) = buffer.get_parts();
+        let value = {
+            let _guard = get_shared();
+            let handle = self.handle;
+            // Call the Library with a Live Handle and with Pointers into the Buffer================
+            unsafe {
+                AbstractState_first_two_phase_deriv(
+                    handle,
+                    of_key,
+                    wrt_key,
+                    constant_key,
+                    code,
+                    message,
+                    length,
+                )
+            }
+        };
+        buffer.get_result()?;
+
+        // Return the Value Only If It Is a Number==================================================
+        if value.is_finite() {
+            Ok(value)
+        } else {
+            Err(format!(
+                "CoolProp returned no valid value {value} for the two-phase density derivative"
             ))
         }
     }

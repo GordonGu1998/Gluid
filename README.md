@@ -24,7 +24,8 @@ CMake, no Python, no download at build time, and no dynamic library to ship or t
   two-phase region. The Prandtl number is an output (new in 0.2.0).
 - **First partial derivatives (new in 0.2.0).** Any derivative among density, enthalpy, pressure and
   temperature of a single-phase state, for example the density against the pressure at constant
-  enthalpy. A two-phase state, where CoolProp returns a wrong value, is refused.
+  enthalpy. A two-phase state, where CoolProp returns a wrong value, is refused; its density slope
+  at constant enthalpy has its own method (new in 0.2.1).
 - **Thread safe.** Each state is owned by one thread, any number of states run in parallel, and the
   results are bit-identical to a single-threaded run.
 - **Honest errors.** A failed call returns CoolProp's own message as a `String`; an output that is
@@ -70,7 +71,7 @@ Add Gluid to `Cargo.toml`:
 
 ```toml
 [dependencies]
-gluid = { git = "https://github.com/GordonGu1998/Gluid", tag = "v0.2.0" }
+gluid = { git = "https://github.com/GordonGu1998/Gluid", tag = "v0.2.1" }
 ```
 
 The first build compiles about 66 C++ files: roughly 30 seconds on 11 cores and a few minutes on
@@ -166,6 +167,7 @@ points, error messages, copies on four threads and the fluid JSON.
 | `AbstractState::set_state(pair, a, b)` | Update from two inputs in the order of the pair |
 | `AbstractState::get_output(output)` | Read an output of the current state |
 | `AbstractState::get_derivative(of, wrt, constant)` | First partial derivative, single phase |
+| `AbstractState::get_two_phase_density_derivative()` | Density against pressure at constant enthalpy, two phase |
 | `AbstractState::clone()` | New state with the same last update |
 | `get_fluid_json(fluid)` | JSON description of a fluid (`None` if unknown) |
 | `COOLPROP_VERSION` | Version of the linked CoolProp (`"8.0.0"`) |

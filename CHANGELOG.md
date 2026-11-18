@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.1
+
+- Added `AbstractState::get_two_phase_density_derivative()`: the density against the pressure at
+  constant enthalpy of a two-phase state (homogeneous mixture, CoolProp's two-phase derivative).
+  A state that is not two-phase is refused.
+
 ## 0.2.0
 
 - Breaking: `Pair` and `Output` are `#[non_exhaustive]`; a `match` on them needs a wildcard arm.
