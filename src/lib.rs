@@ -6,6 +6,12 @@
 // Declare the Raw Interface of the Static CoolProp Library=========================================
 mod ffi;
 
+// Declare the Mixture Properties of a Film Fluid===================================================
+mod mixture;
+
+// Re-Export the Records of the Mixture Properties==================================================
+pub use mixture::{FlowState, ThermalState};
+
 //==================================================================================================
 // Import
 //==================================================================================================
@@ -380,6 +386,9 @@ pub struct AbstractState {
 
     // Define the Last Update None before the First One=============================================
     update: Option<Update>,
+
+    // Define Whether the Fluid Has a Temperature Glide None until the First Test===================
+    glide: Option<bool>,
 }
 
 //==================================================================================================
@@ -409,6 +418,7 @@ impl AbstractState {
             handle,
             fluid,
             update: None,
+            glide: None,
         })
     }
 
@@ -470,8 +480,8 @@ impl AbstractState {
     //==============================================================================================
     /// Read the partial derivative of `of` with respect to `wrt` at constant `constant`, in SI
     /// units. The three variables must differ. A two-phase state is refused, because CoolProp
-    /// returns a wrong value there; the derivative also jumps across the saturation lines. Use
-    /// [`AbstractState::get_two_phase_density_derivative`] for the density slope of that state.
+    /// returns a wrong value there; the derivative also jumps across the saturation lines.
+    /// [`AbstractState::get_flow_state`] reads the density slope in every region.
     pub fn get_derivative(
         &mut self,
         of: Variable,
@@ -526,15 +536,14 @@ impl AbstractState {
     }
 
     //==============================================================================================
-    // Function Name: get_two_phase_density_derivative
-    //   Description: Read the density slope at constant enthalpy of the current two-phase state
+    // Function Name: get_two_phase_slope
+    //   Description: Read the density slope at constant enthalpy from the two phase derivative
     //     Edit Date: Nov 18th, 2026.
     //==============================================================================================
-    /// Read d(density)/d(pressure) at constant enthalpy of the current two-phase state in s2/m2,
-    /// for the homogeneous mixture of the saturated liquid and vapor. Set the state by pressure
-    /// and quality, because an enthalpy and pressure flash fails below the triple pressure. Any
-    /// other state is refused; [`AbstractState::get_derivative`] reads the single-phase slope.
-    pub fn get_two_phase_density_derivative(&mut self) -> Result<f64, String> {
+    /// Read d(density)/d(pressure) at constant enthalpy of the current two-phase state in s2/m2.
+    /// CoolProp assumes one saturation temperature for both phases, so the caller must use it
+    /// only for a fluid without a temperature glide. Any state that is not two-phase is refused.
+    fn get_two_phase_slope(&mut self) -> Result<f64, String> {
         // Refuse a State That Is Not Two Phase=====================================================
         let keys = get_keys()?;
         if self.get_keyed(keys.phase)? != PHASE_TWO_PHASE {
@@ -636,6 +645,7 @@ impl Clone for AbstractState {
     fn clone(&self) -> Self {
         let name = self.fluid.to_string_lossy();
         let mut copy = Self::new(&name).expect("the fluid of a valid state exists");
+        copy.glide = self.glide;
         if let Some(update) = self.update {
             copy.set_state(update.pair, update.value1, update.value2)
                 .expect("the last update of a valid state is valid");

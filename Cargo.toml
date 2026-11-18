@@ -1,6 +1,6 @@
 [package]
 name = "gluid"
-version = "0.2.1"
+version = "0.3.0"
 edition = "2024"
 rust-version = "1.85"
 description = "Fluid properties from CoolProp 8.0.0, compiled and linked statically by cargo build"

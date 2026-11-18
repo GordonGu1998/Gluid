@@ -1,10 +1,23 @@
 # Changelog
 
+## 0.3.0
+
+- Breaking: removed `AbstractState::get_two_phase_density_derivative` (0.2.1).
+- Added `AbstractState::get_flow_state(pressure, enthalpy, with_slope)` and
+  `AbstractState::get_thermal_state(pressure, enthalpy)` with the records `FlowState` and
+  `ThermalState`: density, viscosity, density slope at constant enthalpy, conductivity, specific
+  heat, temperature and temperature slope in the single-phase and the two-phase region. The
+  two-phase state is the homogeneous mixture of the saturated liquid and vapor (mixture rules of
+  Arauz and San Andres, 1998).
+- The two-phase density slope is CoolProp's two-phase derivative. For a fluid with a temperature
+  glide (air) CoolProp's derivative does not match its own saturated properties (0.4 to 30 per
+  cent), so the slope follows from central differences of the saturated properties instead. The
+  fluid is tested once for a glide; no fluid name is stored.
+- The saturated liquid and vapor lines belong to the two-phase region.
+
 ## 0.2.1
 
-- Added `AbstractState::get_two_phase_density_derivative()`: the density against the pressure at
-  constant enthalpy of a two-phase state (homogeneous mixture, CoolProp's two-phase derivative).
-  A state that is not two-phase is refused.
+- Added `AbstractState::get_two_phase_density_derivative()` (removed in 0.3.0).
 
 ## 0.2.0
 

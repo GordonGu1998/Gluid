@@ -24,8 +24,13 @@ CMake, no Python, no download at build time, and no dynamic library to ship or t
   two-phase region. The Prandtl number is an output (new in 0.2.0).
 - **First partial derivatives (new in 0.2.0).** Any derivative among density, enthalpy, pressure and
   temperature of a single-phase state, for example the density against the pressure at constant
-  enthalpy. A two-phase state, where CoolProp returns a wrong value, is refused; its density slope
-  at constant enthalpy has its own method (new in 0.2.1).
+  enthalpy. A two-phase state, where CoolProp returns a wrong value, is refused.
+- **Film fluid properties (new in 0.3.0).** Density, viscosity and the density slope at constant
+  enthalpy, and conductivity, specific heat and temperature, at a pressure and an enthalpy, in the
+  single-phase and the two-phase region. The two-phase state is the homogeneous mixture of the
+  saturated liquid and vapor. The slope is CoolProp's two-phase derivative; for a fluid with a
+  temperature glide (air), where that derivative does not match CoolProp's own saturated
+  properties, it follows from central differences of them.
 - **Thread safe.** Each state is owned by one thread, any number of states run in parallel, and the
   results are bit-identical to a single-threaded run.
 - **Honest errors.** A failed call returns CoolProp's own message as a `String`; an output that is
@@ -71,7 +76,7 @@ Add Gluid to `Cargo.toml`:
 
 ```toml
 [dependencies]
-gluid = { git = "https://github.com/GordonGu1998/Gluid", tag = "v0.2.1" }
+gluid = { git = "https://github.com/GordonGu1998/Gluid", tag = "v0.3.0" }
 ```
 
 The first build compiles about 66 C++ files: roughly 30 seconds on 11 cores and a few minutes on
@@ -155,19 +160,27 @@ let slope = nitrogen
 assert!(slope > 0.0);
 ```
 
-The same slope of a two-phase state (new in 0.2.1) is read by its own method. Set the state by
-pressure and quality, because an enthalpy and pressure flash fails below the triple pressure:
+The film fluid properties (new in 0.3.0) take a pressure and a static enthalpy and choose the
+region themselves. A state between the saturated enthalpies is the homogeneous two-phase mixture:
 
 ```rust
 use gluid::{AbstractState, Pair};
 
 let mut water = AbstractState::new("Water").unwrap();
 water.set_state(Pair::PressureQuality, 2.0e5, 0.3).unwrap();
+let enthalpy = water.get_output(gluid::Output::Enthalpy).unwrap();
 
-// Density of the saturated mixture against pressure at constant enthalpy, in s2/m2.
-let slope = water.get_two_phase_density_derivative().unwrap();
-assert!(slope > 0.0);
+// Density, viscosity and the density slope at constant enthalpy, in SI units.
+let flow = water.get_flow_state(2.0e5, enthalpy, true).unwrap();
+assert!(flow.density_slope.unwrap() > 0.0);
+
+// Conductivity, specific heat, temperature and the temperature slope.
+let thermal = water.get_thermal_state(2.0e5, enthalpy).unwrap();
+assert_eq!(thermal.temperature_slope, 0.0);
 ```
+
+The saturation lines belong to the two-phase region. Both calls change the current state of the
+`AbstractState`.
 
 Run `cargo run --example properties` to print every feature: the outputs including the Prandtl
 number, saturation, the enthalpy flash, partial derivatives checked against their identity, fixed
@@ -181,7 +194,8 @@ points, error messages, copies on four threads and the fluid JSON.
 | `AbstractState::set_state(pair, a, b)` | Update from two inputs in the order of the pair |
 | `AbstractState::get_output(output)` | Read an output of the current state |
 | `AbstractState::get_derivative(of, wrt, constant)` | First partial derivative, single phase |
-| `AbstractState::get_two_phase_density_derivative()` | Density against pressure at constant enthalpy, two phase |
+| `AbstractState::get_flow_state(p, h, with_slope)` | Density, viscosity and density slope, any region |
+| `AbstractState::get_thermal_state(p, h)` | Conductivity, specific heat and temperature, any region |
 | `AbstractState::clone()` | New state with the same last update |
 | `get_fluid_json(fluid)` | JSON description of a fluid (`None` if unknown) |
 | `COOLPROP_VERSION` | Version of the linked CoolProp (`"8.0.0"`) |

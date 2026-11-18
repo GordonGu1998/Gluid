@@ -304,25 +304,27 @@ fn get_mixture_density(fluid: &str, pressure: f64, enthalpy: f64) -> f64 {
 }
 
 //==================================================================================================
-// Function Name: two_phase_density_derivative_matches_mixture_slope
-//   Description: Check the two-phase slope against central differences of the mixture density
+// Function Name: flow_state_slope_matches_density_differences
+//   Description: Check the density slope in both regions against differences of the density
 //     Edit Date: Nov 18th, 2026.
 //==================================================================================================
 #[test]
-fn two_phase_density_derivative_matches_mixture_slope() {
+fn flow_state_slope_matches_density_differences() {
     for (fluid, pressure) in [
         ("Water", 2.0e5),
         ("Nitrogen", 5.0e5),
         ("CO2", 5.0e6),
         ("R134a", 8.0e5),
+        ("Air", 6.0e5),
     ] {
         let mut state = AbstractState::new(fluid).unwrap();
-        for quality in [0.01, 0.5, 0.99] {
+        for quality in [0.1, 0.5, 0.9] {
             state
                 .set_state(Pair::PressureQuality, pressure, quality)
                 .unwrap();
             let enthalpy = state.get_output(Output::Enthalpy).unwrap();
-            let slope = state.get_two_phase_density_derivative().unwrap();
+            let flow = state.get_flow_state(pressure, enthalpy, true).unwrap();
+            let slope = flow.density_slope.unwrap();
             let step = 1.0e-4 * pressure;
             let reference = (get_mixture_density(fluid, pressure + step, enthalpy)
                 - get_mixture_density(fluid, pressure - step, enthalpy))
@@ -331,20 +333,142 @@ fn two_phase_density_derivative_matches_mixture_slope() {
                 (slope / reference - 1.0).abs() < 1e-5,
                 "{fluid} {quality} {slope} {reference}"
             );
+            let density = get_mixture_density(fluid, pressure, enthalpy);
+            assert!(
+                (flow.density / density - 1.0).abs() < 1e-12,
+                "{fluid} {quality}"
+            );
         }
     }
 }
 
 //==================================================================================================
-// Function Name: two_phase_density_derivative_refuses_a_single_phase_state
-//   Description: Check that a single phase state is refused by the two-phase slope
+// Function Name: flow_state_single_phase_matches_the_derivative
+//   Description: Check the single phase state against the density and the library derivative
 //     Edit Date: Nov 18th, 2026.
 //==================================================================================================
 #[test]
-fn two_phase_density_derivative_refuses_a_single_phase_state() {
+fn flow_state_single_phase_matches_the_derivative() {
     let mut state = get_nitrogen();
-    let error = state.get_two_phase_density_derivative().unwrap_err();
-    assert!(error.contains("not two-phase"), "{error}");
+    let enthalpy = state.get_output(Output::Enthalpy).unwrap();
+    let density = state.get_output(Output::Density).unwrap();
+    let viscosity = state.get_output(Output::Viscosity).unwrap();
+    let slope = state
+        .get_derivative(Variable::Density, Variable::Pressure, Variable::Enthalpy)
+        .unwrap();
+    let flow = state.get_flow_state(2.0e6, enthalpy, true).unwrap();
+    assert!(
+        (flow.density / density - 1.0).abs() < 1e-8,
+        "{}",
+        flow.density
+    );
+    assert!(
+        (flow.viscosity / viscosity - 1.0).abs() < 1e-8,
+        "{}",
+        flow.viscosity
+    );
+    assert!((flow.density_slope.unwrap() / slope - 1.0).abs() < 1e-8);
+    assert_eq!(
+        state
+            .get_flow_state(2.0e6, enthalpy, false)
+            .unwrap()
+            .density_slope,
+        None
+    );
+}
+
+//==================================================================================================
+// Function Name: thermal_state_follows_the_mixture_rules
+//   Description: Check the two phase thermal state against the reciprocal and weighted means
+//     Edit Date: Nov 18th, 2026.
+//==================================================================================================
+#[test]
+fn thermal_state_follows_the_mixture_rules() {
+    let (pressure, quality) = (5.0e6, 0.3);
+    let mut state = AbstractState::new("CO2").unwrap();
+    let mut get_saturated = |quality: f64| {
+        state
+            .set_state(Pair::PressureQuality, pressure, quality)
+            .unwrap();
+        [
+            state.get_output(Output::Enthalpy).unwrap(),
+            state.get_output(Output::Conductivity).unwrap(),
+            state.get_output(Output::SpecificHeat).unwrap(),
+            state.get_output(Output::Temperature).unwrap(),
+        ]
+    };
+    let [h_liquid, k_liquid, c_liquid, _] = get_saturated(0.0);
+    let [h_vapor, k_vapor, c_vapor, t_vapor] = get_saturated(1.0);
+    let enthalpy = h_liquid + quality * (h_vapor - h_liquid);
+
+    let thermal = state.get_thermal_state(pressure, enthalpy).unwrap();
+    let conductivity = 1.0 / (quality / k_vapor + (1.0 - quality) / k_liquid);
+    let specific_heat = quality * c_vapor + (1.0 - quality) * c_liquid;
+    assert!((thermal.conductivity / conductivity - 1.0).abs() < 1e-12);
+    assert!((thermal.specific_heat / specific_heat - 1.0).abs() < 1e-12);
+    assert_eq!(thermal.temperature, t_vapor);
+    assert_eq!(thermal.temperature_slope, 0.0);
+
+    let mut gas = get_nitrogen();
+    let enthalpy = gas.get_output(Output::Enthalpy).unwrap();
+    let specific_heat = gas.get_output(Output::SpecificHeat).unwrap();
+    let thermal = gas.get_thermal_state(2.0e6, enthalpy).unwrap();
+    assert!((thermal.temperature_slope * specific_heat - 1.0).abs() < 1e-12);
+}
+
+//==================================================================================================
+// Function Name: flow_state_works_on_a_fresh_state_and_near_the_limits
+//   Description: Check a fresh state, a pressure below the triple point and one near the critical
+//     Edit Date: Nov 18th, 2026.
+//==================================================================================================
+#[test]
+fn flow_state_works_on_a_fresh_state_and_near_the_limits() {
+    let mut fresh = AbstractState::new("Nitrogen").unwrap();
+    assert!(fresh.get_flow_state(2.0e6, 4.0e5, true).is_ok());
+
+    for (fluid, ratio) in [
+        ("CO2", 0.04),
+        ("CO2", 0.999),
+        ("Air", 0.999),
+        ("Water", 0.999),
+    ] {
+        let mut state = AbstractState::new(fluid).unwrap();
+        let pressure = ratio * state.get_output(Output::CriticalPressure).unwrap();
+        state
+            .set_state(Pair::PressureQuality, pressure, 0.5)
+            .unwrap();
+        let enthalpy = state.get_output(Output::Enthalpy).unwrap();
+        let flow = state.get_flow_state(pressure, enthalpy, true).unwrap();
+        let slope = flow.density_slope.unwrap();
+        assert!(slope.is_finite() && slope > 0.0, "{fluid} {ratio} {slope}");
+    }
+}
+
+//==================================================================================================
+// Function Name: flow_state_puts_the_saturation_lines_in_the_two_phase_region
+//   Description: Check that the saturated liquid and vapor take the two phase slope
+//     Edit Date: Nov 18th, 2026.
+//==================================================================================================
+#[test]
+fn flow_state_puts_the_saturation_lines_in_the_two_phase_region() {
+    let pressure = 5.0e6;
+    let mut state = AbstractState::new("CO2").unwrap();
+    state
+        .set_state(Pair::PressureQuality, pressure, 0.0)
+        .unwrap();
+    let h_liquid = state.get_output(Output::Enthalpy).unwrap();
+    state
+        .set_state(Pair::PressureQuality, pressure, 1.0)
+        .unwrap();
+    let h_vapor = state.get_output(Output::Enthalpy).unwrap();
+
+    let mut get_slope = |enthalpy: f64| {
+        let flow = state.get_flow_state(pressure, enthalpy, true).unwrap();
+        flow.density_slope.unwrap()
+    };
+    assert!(get_slope(h_liquid) > 10.0 * get_slope(h_liquid - 1.0));
+    assert!(get_slope(h_vapor) > 1.0e-6 && get_slope(h_vapor + 1.0) > 0.0);
+    assert!((get_slope(h_vapor) / get_slope(h_vapor + 1.0) - 1.0).abs() > 1e-3);
 }
 
 //==================================================================================================
