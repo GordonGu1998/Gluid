@@ -19,6 +19,12 @@ const GLIDE_PRESSURE_RATIO: f64 = 0.5;
 // Define the Relative Temperature Gap Above Which a Fluid Has a Glide==============================
 const GLIDE_TOLERANCE: f64 = 1.0e-6;
 
+// Define the Relative Distance inside the Range at Which a Limited Enthalpy Is Placed==============
+const EDGE_MARGIN: f64 = 1.0e-4;
+
+// Define the Most Times the Edge of the Range Is Read from the Message and Tried===================
+const LIMIT_ATTEMPTS: usize = 4;
+
 //==================================================================================================
 // Types
 //==================================================================================================
@@ -34,6 +40,9 @@ pub struct FlowState {
 
     // Define the Density Slope in Second Squared per Meter Squared None If Not Requested===========
     pub density_slope: Option<f64>,
+
+    // Define Whether the Enthalpy Was Limited to the Range of the Equation of State================
+    pub limited: bool,
 }
 
 // Declare the Thermal Properties of a Film Fluid at a Pressure and an Enthalpy=====================
@@ -52,6 +61,9 @@ pub struct ThermalState {
 
     // Define the Temperature Slope with the Enthalpy in Kelvin Kilogram per Joule==================
     pub temperature_slope: f64,
+
+    // Define Whether the Enthalpy Was Limited to the Range of the Equation of State================
+    pub limited: bool,
 }
 
 // Declare the Saturated Liquid and Vapor Properties at a Pressure==================================
@@ -154,6 +166,37 @@ fn get_mixture_viscosity(
 }
 
 //==================================================================================================
+// Function Name: get_limited_enthalpy
+//   Description: Read the edge of the enthalpy range from a flash error and limit the enthalpy
+//     Edit Date: Nov 18th, 2026.
+//==================================================================================================
+fn get_limited_enthalpy(message: &str, enthalpy: f64) -> Option<f64> {
+    // Read the Molar Enthalpy That Was Refused and the Edge of the Range from the Message==========
+    let number_after = |key: &str| -> Option<f64> {
+        let tail = &message[message.find(key)? + key.len()..];
+        let end = tail
+            .find(|c: char| !(c.is_ascii_digit() || matches!(c, '.' | '-' | '+' | 'e' | 'E')))
+            .unwrap_or(tail.len());
+        tail[..end].parse().ok()
+    };
+    let refused = number_after("Hmolar [")?;
+    let (edge, inside) = if message.contains("is below the minimum value of") {
+        (number_after("minimum value of ")?, 1.0)
+    } else if message.contains("is above the maximum value of") {
+        (number_after("maximum value of ")?, -1.0)
+    } else {
+        return None;
+    };
+
+    // Convert the Edge to Joules per Kilogram with the Ratio of the Two Enthalpies=================
+    if refused == 0.0 || !(enthalpy / refused).is_finite() {
+        return None;
+    }
+    let limit = edge * (enthalpy / refused);
+    Some(limit + inside * EDGE_MARGIN * limit.abs().max(1.0))
+}
+
+//==================================================================================================
 // Film Fluid Properties
 //==================================================================================================
 impl AbstractState {
@@ -168,12 +211,17 @@ impl AbstractState {
     /// A single-phase state returns the CoolProp properties. A two-phase state is the homogeneous
     /// mixture of the saturated liquid and vapor: the quality follows from the enthalpy, the
     /// density from the specific volumes, the viscosity from the model of Arauz and San Andres.
+    ///
     /// The slope of a single-phase state is CoolProp's derivative at constant enthalpy. In the
-    /// two-phase region it is CoolProp's two-phase derivative, except for a fluid with a
-    /// temperature glide (air), where CoolProp's formula does not match its own saturated
-    /// properties: there the slope follows from central differences of those properties. The
-    /// saturation lines belong to the two-phase region (quality 0 and 1), and the slope jumps
-    /// across them. The call changes the current state.
+    /// two-phase region it is CoolProp's two-phase derivative (Thorade and Saadat, 2013), which
+    /// assumes a pure fluid with one saturation temperature. It is used only for a fluid without a
+    /// temperature glide and a saturation temperature at or above the lowest temperature of the
+    /// equation of state. Otherwise (air, or a state below the triple point) the slope follows
+    /// from central differences of the saturated properties. The saturation lines belong to the
+    /// two-phase region (quality 0 and 1), and the slope jumps across them.
+    ///
+    /// An enthalpy that CoolProp refuses at the edge of the range of the equation of state is
+    /// moved just inside that edge, and `limited` is set. The call changes the current state.
     pub fn get_flow_state(
         &mut self,
         pressure: f64,
@@ -183,7 +231,7 @@ impl AbstractState {
         match self.get_region(pressure, enthalpy)? {
             Region::SinglePhase => {
                 // Flash the State Once and Read Only the Requested Properties======================
-                self.set_state(Pair::EnthalpyPressure, enthalpy, pressure)?;
+                let limited = self.set_enthalpy_pressure(enthalpy, pressure)?;
                 let density = self.get_output(Output::Density)?;
                 let viscosity = self.get_output(Output::Viscosity)?;
                 let density_slope = if with_slope {
@@ -200,6 +248,7 @@ impl AbstractState {
                     density,
                     viscosity,
                     density_slope,
+                    limited,
                 })
             }
 
@@ -238,6 +287,7 @@ impl AbstractState {
                     density,
                     viscosity,
                     density_slope,
+                    limited: false,
                 })
             }
         }
@@ -254,8 +304,11 @@ impl AbstractState {
     /// A single-phase state returns the CoolProp properties and the slope `1 / c_p`. A
     /// two-phase state is the homogeneous mixture of the saturated liquid and vapor: the
     /// conductivity follows the reciprocal law in the quality, the specific heat the quality
-    /// weighted mean without latent heat, the temperature is that of the saturated vapor, and the
-    /// slope is zero. The call changes the current state.
+    /// weighted mean without latent heat. For a pure fluid the temperature is the saturation
+    /// temperature and the slope is zero. For a fluid with a temperature glide (air) the
+    /// temperature runs linearly in the quality from the bubble to the dew point, with the slope
+    /// of that line against the enthalpy. A limited enthalpy sets `limited` as in
+    /// [`AbstractState::get_flow_state`]. The call changes the current state.
     pub fn get_thermal_state(
         &mut self,
         pressure: f64,
@@ -264,7 +317,7 @@ impl AbstractState {
         match self.get_region(pressure, enthalpy)? {
             Region::SinglePhase => {
                 // Flash the State Once and Read the Three Properties===============================
-                self.set_state(Pair::EnthalpyPressure, enthalpy, pressure)?;
+                let limited = self.set_enthalpy_pressure(enthalpy, pressure)?;
 
                 let specific_heat = self.get_output(Output::SpecificHeat)?;
 
@@ -273,6 +326,7 @@ impl AbstractState {
                     specific_heat,
                     temperature: self.get_output(Output::Temperature)?,
                     temperature_slope: 1.0 / specific_heat,
+                    limited,
                 })
             }
 
@@ -283,18 +337,31 @@ impl AbstractState {
                 self.set_state(Pair::PressureQuality, pressure, 1.0)?;
                 let k_vapor = self.get_output(Output::Conductivity)?;
                 let c_vapor = self.get_output(Output::SpecificHeat)?;
-                let temperature = self.get_output(Output::Temperature)?;
+                let t_vapor = self.get_output(Output::Temperature)?;
 
                 // Read the Saturated Liquid========================================================
                 self.set_state(Pair::PressureQuality, pressure, 0.0)?;
                 let k_liquid = self.get_output(Output::Conductivity)?;
                 let c_liquid = self.get_output(Output::SpecificHeat)?;
+                let t_liquid = self.get_output(Output::Temperature)?;
+
+                // Interpolate the Temperature in the Quality across the Glide of the Dome==========
+                let (temperature, temperature_slope) = if self.get_glide()? {
+                    let gap = t_vapor - t_liquid;
+                    (
+                        t_liquid + quality * gap,
+                        gap / (saturation.h_vapor - saturation.h_liquid),
+                    )
+                } else {
+                    (t_vapor, 0.0)
+                };
 
                 Ok(ThermalState {
                     conductivity: get_mixture_conductivity(quality, k_liquid, k_vapor),
                     specific_heat: get_mixture_specific_heat(quality, c_liquid, c_vapor),
                     temperature,
-                    temperature_slope: 0.0,
+                    temperature_slope,
+                    limited: false,
                 })
             }
         }
@@ -370,13 +437,17 @@ impl AbstractState {
         quality: f64,
         saturation: &Saturation,
     ) -> Result<f64, String> {
+        // Differentiate the Saturated Properties Where the Library Formula Does Not Hold===========
         if self.get_glide()? {
-            // Differentiate the Saturated Properties Where the Library Formula Does Not Hold=======
+            return self.get_saturation_slope(pressure, quality, saturation);
+        }
+        self.set_state(Pair::PressureQuality, pressure, quality)?;
+        let t_min = self.get_output(Output::MinTemperature)?;
+        if self.get_output(Output::Temperature)? < t_min {
             return self.get_saturation_slope(pressure, quality, saturation);
         }
 
         // Read the Two Phase Derivative of the Library=============================================
-        self.set_state(Pair::PressureQuality, pressure, quality)?;
         self.get_two_phase_slope()
     }
 
@@ -419,6 +490,34 @@ impl AbstractState {
         // Convert the Slope of the Specific Volume into That of the Density========================
         let density = get_mixture_density(quality, saturation.rho_liquid, saturation.rho_vapor);
         Ok(-density * density * d_volume)
+    }
+
+    //==============================================================================================
+    // Function Name: set_enthalpy_pressure
+    //   Description: Flash the enthalpy and pressure and limit a refused enthalpy to the range
+    //     Edit Date: Nov 18th, 2026.
+    //==============================================================================================
+    pub(crate) fn set_enthalpy_pressure(
+        &mut self,
+        enthalpy: f64,
+        pressure: f64,
+    ) -> Result<bool, String> {
+        // Move a Refused Enthalpy inside the Edge the Flash Names and Try Again====================
+        let mut value = enthalpy;
+        let mut limited = false;
+        for attempt in 0..LIMIT_ATTEMPTS {
+            match self.set_state(Pair::EnthalpyPressure, value, pressure) {
+                Ok(()) => return Ok(limited),
+                Err(message) => match get_limited_enthalpy(&message, value) {
+                    Some(edge) if attempt + 1 < LIMIT_ATTEMPTS => {
+                        limited = true;
+                        value = edge;
+                    }
+                    _ => return Err(message),
+                },
+            }
+        }
+        unreachable!("The loop returns at its last attempt")
     }
 
     //==============================================================================================

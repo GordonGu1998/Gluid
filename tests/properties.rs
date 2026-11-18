@@ -5,7 +5,7 @@
 use std::thread;
 
 // Import the Interface to Test=====================================================================
-use gluid::{AbstractState, COOLPROP_VERSION, Output, Pair, Variable, get_fluid_json};
+use gluid::{AbstractState, COOLPROP_VERSION, Output, Pair, Phase, Variable, get_fluid_json};
 
 //==================================================================================================
 // Function Name: get_nitrogen
@@ -316,6 +316,11 @@ fn flow_state_slope_matches_density_differences() {
         ("CO2", 5.0e6),
         ("R134a", 8.0e5),
         ("Air", 6.0e5),
+        ("Methane", 1.0e6),
+        ("Hydrogen", 5.0e5),
+        ("Helium", 1.0e5),
+        ("CO2", 2.2e5),
+        ("Helium", 2.0e3),
     ] {
         let mut state = AbstractState::new(fluid).unwrap();
         for quality in [0.1, 0.5, 0.9] {
@@ -469,6 +474,171 @@ fn flow_state_puts_the_saturation_lines_in_the_two_phase_region() {
     assert!(get_slope(h_liquid) > 10.0 * get_slope(h_liquid - 1.0));
     assert!(get_slope(h_vapor) > 1.0e-6 && get_slope(h_vapor + 1.0) > 0.0);
     assert!((get_slope(h_vapor) / get_slope(h_vapor + 1.0) - 1.0).abs() > 1e-3);
+}
+
+//==================================================================================================
+// Function Name: thermal_state_follows_the_glide_of_air
+//   Description: Check the linear temperature across the dome of air and its slope
+//     Edit Date: Nov 18th, 2026.
+//==================================================================================================
+#[test]
+fn thermal_state_follows_the_glide_of_air() {
+    let (pressure, quality) = (6.0e5, 0.3);
+    let mut state = AbstractState::new("Air").unwrap();
+    let mut get_saturated = |quality: f64| {
+        state
+            .set_state(Pair::PressureQuality, pressure, quality)
+            .unwrap();
+        [
+            state.get_output(Output::Enthalpy).unwrap(),
+            state.get_output(Output::Temperature).unwrap(),
+        ]
+    };
+    let [h_bubble, t_bubble] = get_saturated(0.0);
+    let [h_dew, t_dew] = get_saturated(1.0);
+    assert!(t_dew - t_bubble > 1.0, "{t_bubble} {t_dew}");
+
+    let enthalpy = h_bubble + quality * (h_dew - h_bubble);
+    let thermal = state.get_thermal_state(pressure, enthalpy).unwrap();
+    let temperature = t_bubble + quality * (t_dew - t_bubble);
+    let slope = (t_dew - t_bubble) / (h_dew - h_bubble);
+    assert!((thermal.temperature / temperature - 1.0).abs() < 1e-12);
+    assert!((thermal.temperature_slope / slope - 1.0).abs() < 1e-12);
+}
+
+//==================================================================================================
+// Function Name: limited_enthalpy_is_moved_inside_the_range
+//   Description: Check that a refused enthalpy is limited and flagged and a valid one is not
+//     Edit Date: Nov 18th, 2026.
+//==================================================================================================
+#[test]
+fn limited_enthalpy_is_moved_inside_the_range() {
+    let mut state = AbstractState::new("Nitrogen").unwrap();
+    state.set_state(Pair::PressureQuality, 3.4e4, 0.0).unwrap();
+    let h_liquid = state.get_output(Output::Enthalpy).unwrap();
+    let flow = state.get_flow_state(3.4e4, h_liquid - 5.0e5, true).unwrap();
+    assert!(flow.limited && flow.density > 0.0);
+    let thermal = state.get_thermal_state(3.4e4, h_liquid - 5.0e5).unwrap();
+    assert!(thermal.limited && thermal.temperature > 0.0);
+
+    let mut gas = get_nitrogen();
+    let enthalpy = gas.get_output(Output::Enthalpy).unwrap();
+    assert!(!gas.get_flow_state(2.0e6, enthalpy, true).unwrap().limited);
+    assert!(!gas.get_thermal_state(2.0e6, enthalpy).unwrap().limited);
+}
+
+//==================================================================================================
+// Function Name: failed_flash_leaves_a_usable_state
+//   Description: Check that a state works again after a flash that the library refused
+//     Edit Date: Nov 18th, 2026.
+//==================================================================================================
+#[test]
+fn failed_flash_leaves_a_usable_state() {
+    let mut state = AbstractState::new("Air").unwrap();
+    let pressure = 1.0001 * state.get_output(Output::CriticalPressure).unwrap();
+    assert!(
+        state
+            .set_state(Pair::EnthalpyPressure, 1.5e5, pressure)
+            .is_err()
+    );
+    state
+        .set_state(Pair::PressureTemperature, 1.0e5, 300.0)
+        .unwrap();
+    assert!(state.get_output(Output::Density).unwrap() > 1.0);
+}
+
+//==================================================================================================
+// Function Name: phase_data_of_the_six_film_fluids
+//   Description: Check the triple points and the melting and sublimation lines of six fluids
+//     Edit Date: Nov 18th, 2026.
+//==================================================================================================
+#[test]
+fn phase_data_of_the_six_film_fluids() {
+    for (fluid, triple, melting, sublimation) in [
+        ("CarbonDioxide", true, true, true),
+        ("Nitrogen", true, true, false),
+        ("Methane", true, true, false),
+        ("Air", false, false, false),
+        ("Hydrogen", true, false, false),
+        ("Helium", false, true, false),
+    ] {
+        let mut state = AbstractState::new(fluid).unwrap();
+        let data = state.get_phase_data().unwrap();
+        assert_eq!(data.triple.is_some(), triple, "{fluid}");
+        assert_eq!(data.melting_line.is_some(), melting, "{fluid}");
+        assert_eq!(data.sublimation_line.is_some(), sublimation, "{fluid}");
+        if let (Some(line), Some((t_triple, p_triple))) = (&data.melting_line, data.triple) {
+            assert!(
+                (line.get_pressure(t_triple) / p_triple - 1.0).abs() < 1e-2,
+                "{fluid}"
+            );
+        }
+    }
+
+    let mut carbon_dioxide = AbstractState::new("CO2").unwrap();
+    let data = carbon_dioxide.get_phase_data().unwrap();
+    let line = data.sublimation_line.unwrap();
+    let p_normal = line.get_pressure(194.6855).unwrap();
+    assert!((p_normal / 101_325.0 - 1.0).abs() < 1e-4, "{p_normal}");
+    assert_eq!(line.get_pressure(line.t_triple + 1.0), None);
+}
+
+//==================================================================================================
+// Function Name: phase_boundary_classifies_the_regions
+//   Description: Check the phase tables of carbon dioxide and air across the critical pressure
+//     Edit Date: Nov 18th, 2026.
+//==================================================================================================
+#[test]
+fn phase_boundary_classifies_the_regions() {
+    for fluid in ["CO2", "Air"] {
+        let mut state = AbstractState::new(fluid).unwrap();
+        let p_critical = state.get_output(Output::CriticalPressure).unwrap();
+        let boundary = state
+            .get_phase_boundary((0.3 * p_critical, 1.5 * p_critical))
+            .unwrap();
+        let pressure = 0.5 * p_critical;
+        state
+            .set_state(Pair::PressureQuality, pressure, 0.0)
+            .unwrap();
+        let h_liquid = state.get_output(Output::Enthalpy).unwrap();
+        state
+            .set_state(Pair::PressureQuality, pressure, 1.0)
+            .unwrap();
+        let h_vapor = state.get_output(Output::Enthalpy).unwrap();
+        let span = h_vapor - h_liquid;
+        assert_eq!(
+            boundary.get_phase(pressure, h_liquid - 0.1 * span),
+            Phase::Liquid
+        );
+        assert_eq!(
+            boundary.get_phase(pressure, h_liquid + 0.5 * span),
+            Phase::TwoPhase
+        );
+        assert_eq!(
+            boundary.get_phase(pressure, h_vapor + 0.1 * span),
+            Phase::Gas
+        );
+        assert_eq!(
+            boundary.get_phase(1.4 * p_critical, h_vapor + span),
+            Phase::Supercritical
+        );
+    }
+}
+
+//==================================================================================================
+// Function Name: saturation_line_is_recognized
+//   Description: Check the saturation line test on and off the line
+//     Edit Date: Nov 18th, 2026.
+//==================================================================================================
+#[test]
+fn saturation_line_is_recognized() {
+    let mut state = AbstractState::new("Nitrogen").unwrap();
+    state
+        .set_state(Pair::QualityTemperature, 0.0, 100.0)
+        .unwrap();
+    let p_saturation = state.get_output(Output::Pressure).unwrap();
+    assert!(state.is_on_saturation_line(p_saturation, 100.0));
+    assert!(!state.is_on_saturation_line(1.5 * p_saturation, 100.0));
 }
 
 //==================================================================================================

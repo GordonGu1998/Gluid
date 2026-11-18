@@ -9,8 +9,12 @@ mod ffi;
 // Declare the Mixture Properties of a Film Fluid===================================================
 mod mixture;
 
+// Declare the Phase Data and the Phase Boundaries of a Fluid=======================================
+mod phase;
+
 // Re-Export the Records of the Mixture Properties==================================================
 pub use mixture::{FlowState, ThermalState};
+pub use phase::{MeltingLine, MeltingLineKind, Phase, PhaseBoundary, PhaseData, SublimationLine};
 
 //==================================================================================================
 // Import
@@ -360,6 +364,37 @@ pub fn get_fluid_json(fluid: &str) -> Option<String> {
 }
 
 //==================================================================================================
+// Function Name: get_handle
+//   Description: Create a state of a fluid in the library under the shared lock
+//     Edit Date: Nov 18th, 2026.
+//==================================================================================================
+fn get_handle(fluid: &CStr) -> Result<c_long, String> {
+    let mut buffer = ErrorBuffer::new();
+    let (code, message, length) = buffer.get_parts();
+    let handle = {
+        let _guard = get_shared();
+        let (backend, name) = (BACKEND.as_ptr(), fluid.as_ptr());
+        // Call the Library with Names That End with a Zero and with Pointers into the Buffer=======
+        unsafe { AbstractState_factory(backend, name, code, message, length) }
+    };
+    buffer.get_result()?;
+    Ok(handle)
+}
+
+//==================================================================================================
+// Function Name: free_handle
+//   Description: Free a state in the library under the shared lock
+//     Edit Date: Nov 18th, 2026.
+//==================================================================================================
+fn free_handle(handle: c_long) {
+    let mut buffer = ErrorBuffer::new();
+    let (code, message, length) = buffer.get_parts();
+    let _guard = get_shared();
+    // Call the Library with a Live Handle and with Pointers into the Buffer========================
+    unsafe { AbstractState_free(handle, code, message, length) };
+}
+
+//==================================================================================================
 // State
 //==================================================================================================
 // Declare the Last Update of a State to Replay It in a Copy and to Return Its Inputs===============
@@ -403,15 +438,7 @@ impl AbstractState {
         // Create the State of the Fluid under the Shared Lock======================================
         let fluid = CString::new(fluid).map_err(|error| error.to_string())?;
         get_keys()?;
-        let mut buffer = ErrorBuffer::new();
-        let (code, message, length) = buffer.get_parts();
-        let handle = {
-            let _guard = get_shared();
-            let (backend, name) = (BACKEND.as_ptr(), fluid.as_ptr());
-            // Call the Library with Names That End with a Zero and with Pointers into the Buffer===
-            unsafe { AbstractState_factory(backend, name, code, message, length) }
-        };
-        buffer.get_result()?;
+        let handle = get_handle(&fluid)?;
 
         // Return the State=========================================================================
         Ok(Self {
@@ -427,7 +454,9 @@ impl AbstractState {
     //   Description: Update the state from two inputs in the order of the pair
     //     Edit Date: Oct 15th, 2026.
     //==============================================================================================
-    /// Update the state from two inputs in the order of the pair.
+    /// Update the state from two inputs in the order of the pair. A failed update leaves the
+    /// state as a new one without an update, because CoolProp refuses every later update of a
+    /// state whose flash failed.
     pub fn set_state(&mut self, pair: Pair, value1: f64, value2: f64) -> Result<(), String> {
         // Update the State under the Shared Lock===================================================
         let key = get_keys()?.pair[pair as usize];
@@ -439,7 +468,13 @@ impl AbstractState {
             // Call the Library with a Live Handle and with Pointers into the Buffer================
             unsafe { AbstractState_update(handle, key, value1, value2, code, message, length) };
         }
-        buffer.get_result()?;
+        if let Err(error) = buffer.get_result() {
+            // Replace the Handle of the Failed Update with a New One and Report the Failure========
+            let fresh = get_handle(&self.fluid)?;
+            free_handle(std::mem::replace(&mut self.handle, fresh));
+            self.update = None;
+            return Err(error);
+        }
 
         // Keep the Update for the Inputs and the Copies============================================
         self.update = Some(Update {
@@ -664,10 +699,6 @@ impl Drop for AbstractState {
     //     Edit Date: Oct 15th, 2026.
     //==============================================================================================
     fn drop(&mut self) {
-        let mut buffer = ErrorBuffer::new();
-        let (code, message, length) = buffer.get_parts();
-        let _guard = get_shared();
-        // Call the Library with a Live Handle and with Pointers into the Buffer====================
-        unsafe { AbstractState_free(self.handle, code, message, length) };
+        free_handle(self.handle);
     }
 }

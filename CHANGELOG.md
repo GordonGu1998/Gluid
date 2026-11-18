@@ -3,17 +3,25 @@
 ## 0.3.0
 
 - Breaking: removed `AbstractState::get_two_phase_density_derivative` (0.2.1).
-- Added `AbstractState::get_flow_state(pressure, enthalpy, with_slope)` and
-  `AbstractState::get_thermal_state(pressure, enthalpy)` with the records `FlowState` and
-  `ThermalState`: density, viscosity, density slope at constant enthalpy, conductivity, specific
-  heat, temperature and temperature slope in the single-phase and the two-phase region. The
-  two-phase state is the homogeneous mixture of the saturated liquid and vapor (mixture rules of
-  Arauz and San Andres, 1998).
-- The two-phase density slope is CoolProp's two-phase derivative. For a fluid with a temperature
-  glide (air) CoolProp's derivative does not match its own saturated properties (0.4 to 30 per
-  cent), so the slope follows from central differences of the saturated properties instead. The
-  fluid is tested once for a glide; no fluid name is stored.
-- The saturated liquid and vapor lines belong to the two-phase region.
+- Breaking: `set_state` replaces the state after a failed update with a new one (no last update),
+  because CoolProp refuses every later update of a state whose flash failed.
+- Added `get_flow_state(pressure, enthalpy, with_slope)` and `get_thermal_state(pressure,
+  enthalpy)` with `FlowState` and `ThermalState`: density, viscosity, density slope at constant
+  enthalpy, conductivity, specific heat, temperature and its slope in the single-phase and the
+  homogeneous two-phase region (mixture rules of Arauz and San Andres, 1998). The saturation lines
+  belong to the two-phase region. An enthalpy that the equation of state refuses at the edge of
+  its range is moved just inside it and `limited` is set.
+- The two-phase density slope is CoolProp's two-phase derivative (Thorade and Saadat, 2013, pure
+  fluids) only for a fluid without a temperature glide and at or above the lowest temperature of
+  the equation of state. Otherwise (air; carbon dioxide and helium below the triple point, where
+  the derivative drifts by up to 30 per cent) it follows from central differences of the saturated
+  properties. Across the dome of air the temperature runs linearly in the quality from the bubble
+  to the dew point.
+- Added `get_phase_data`, `PhaseData`, `MeltingLine`, `MeltingLineKind`, `SublimationLine`,
+  `get_phase_boundary`, `PhaseBoundary`, `Phase` and `is_on_saturation_line`. For air the phase
+  tables avoid the critical region between the maxcondentherm and the maxcondenbar (Lemmon et al.,
+  2000), where the flash fails.
+- New dependency `serde_json` (fluid data).
 
 ## 0.2.1
 

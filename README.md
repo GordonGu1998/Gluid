@@ -28,9 +28,14 @@ CMake, no Python, no download at build time, and no dynamic library to ship or t
 - **Film fluid properties (new in 0.3.0).** Density, viscosity and the density slope at constant
   enthalpy, and conductivity, specific heat and temperature, at a pressure and an enthalpy, in the
   single-phase and the two-phase region. The two-phase state is the homogeneous mixture of the
-  saturated liquid and vapor. The slope is CoolProp's two-phase derivative; for a fluid with a
-  temperature glide (air), where that derivative does not match CoolProp's own saturated
-  properties, it follows from central differences of them.
+  saturated liquid and vapor. The slope is CoolProp's two-phase derivative (Thorade and Saadat,
+  2013), which assumes a pure fluid; for a fluid with a temperature glide (air) or below the
+  lowest temperature of the equation of state it follows from central differences of the
+  saturated properties. Across the dome of air the temperature runs from the bubble to the dew
+  point. An enthalpy outside the range of the equation of state is moved inside and flagged.
+- **Phase data (new in 0.3.0).** Critical and triple points, melting line, the sublimation line of
+  carbon dioxide, a saturation-line test, and tables of the phase boundaries that classify a state
+  as liquid, gas, two-phase or supercritical.
 - **Thread safe.** Each state is owned by one thread, any number of states run in parallel, and the
   results are bit-identical to a single-threaded run.
 - **Honest errors.** A failed call returns CoolProp's own message as a `String`; an output that is
@@ -180,7 +185,8 @@ assert_eq!(thermal.temperature_slope, 0.0);
 ```
 
 The saturation lines belong to the two-phase region. Both calls change the current state of the
-`AbstractState`.
+`AbstractState`. A failed update of any kind leaves the state as a new one, because CoolProp
+refuses every later update of a state whose flash failed.
 
 Run `cargo run --example properties` to print every feature: the outputs including the Prandtl
 number, saturation, the enthalpy flash, partial derivatives checked against their identity, fixed
@@ -196,6 +202,9 @@ points, error messages, copies on four threads and the fluid JSON.
 | `AbstractState::get_derivative(of, wrt, constant)` | First partial derivative, single phase |
 | `AbstractState::get_flow_state(p, h, with_slope)` | Density, viscosity and density slope, any region |
 | `AbstractState::get_thermal_state(p, h)` | Conductivity, specific heat and temperature, any region |
+| `AbstractState::get_phase_data()` | Critical and triple points, melting and sublimation lines |
+| `AbstractState::get_phase_boundary((p_low, p_high))` | Phase tables; `PhaseBoundary::get_phase(p, h)` |
+| `AbstractState::is_on_saturation_line(p, t)` | Whether a pressure and a temperature are saturated |
 | `AbstractState::clone()` | New state with the same last update |
 | `get_fluid_json(fluid)` | JSON description of a fluid (`None` if unknown) |
 | `COOLPROP_VERSION` | Version of the linked CoolProp (`"8.0.0"`) |
