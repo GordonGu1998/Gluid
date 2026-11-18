@@ -155,6 +155,20 @@ let slope = nitrogen
 assert!(slope > 0.0);
 ```
 
+The same slope of a two-phase state (new in 0.2.1) is read by its own method. Set the state by
+pressure and quality, because an enthalpy and pressure flash fails below the triple pressure:
+
+```rust
+use gluid::{AbstractState, Pair};
+
+let mut water = AbstractState::new("Water").unwrap();
+water.set_state(Pair::PressureQuality, 2.0e5, 0.3).unwrap();
+
+// Density of the saturated mixture against pressure at constant enthalpy, in s2/m2.
+let slope = water.get_two_phase_density_derivative().unwrap();
+assert!(slope > 0.0);
+```
+
 Run `cargo run --example properties` to print every feature: the outputs including the Prandtl
 number, saturation, the enthalpy flash, partial derivatives checked against their identity, fixed
 points, error messages, copies on four threads and the fluid JSON.
