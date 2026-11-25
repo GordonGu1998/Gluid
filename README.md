@@ -81,7 +81,7 @@ Add Gluid to `Cargo.toml`:
 
 ```toml
 [dependencies]
-gluid = { git = "https://github.com/GordonGu1998/Gluid", tag = "v0.3.0" }
+gluid = { git = "https://github.com/GordonGu1998/Gluid", tag = "v0.3.1" }
 ```
 
 The first build compiles about 66 C++ files: roughly 30 seconds on 11 cores and a few minutes on

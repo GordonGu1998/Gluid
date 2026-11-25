@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.3.1 (not released)
+## 0.3.1
 
 - `get_flow_state` flashes the enthalpy and the pressure first and skips the saturation lookup when
   the temperature lies above the critical temperature (1.1 times that for a fluid with a glide).
