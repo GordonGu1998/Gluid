@@ -25,6 +25,9 @@ const EDGE_MARGIN: f64 = 1.0e-4;
 // Define the Most Times the Edge of the Range Is Read from the Message and Tried===================
 const LIMIT_ATTEMPTS: usize = 4;
 
+// Define the Temperature Ratio to the Critical Point above Which a Fluid with a Glide Is a Gas=====
+const GLIDE_HOT_RATIO: f64 = 1.1;
+
 //==================================================================================================
 // Types
 //==================================================================================================
@@ -228,28 +231,29 @@ impl AbstractState {
         enthalpy: f64,
         with_slope: bool,
     ) -> Result<FlowState, String> {
+        // Skip the Saturation Lookup of a State Hotter Than the Dome of the Fluid==================
+        if let Some(state) = self.get_hot_flow_state(pressure, enthalpy, with_slope) {
+            return Ok(state);
+        }
+        self.get_flow_state_by_region(pressure, enthalpy, with_slope)
+    }
+
+    //==============================================================================================
+    // Function Name: get_flow_state_by_region
+    //   Description: Calculate the flow state after the saturation lookup of the region
+    //     Edit Date: Nov 24th, 2026.
+    //==============================================================================================
+    fn get_flow_state_by_region(
+        &mut self,
+        pressure: f64,
+        enthalpy: f64,
+        with_slope: bool,
+    ) -> Result<FlowState, String> {
         match self.get_region(pressure, enthalpy)? {
             Region::SinglePhase => {
                 // Flash the State Once and Read Only the Requested Properties======================
                 let limited = self.set_enthalpy_pressure(enthalpy, pressure)?;
-                let density = self.get_output(Output::Density)?;
-                let viscosity = self.get_output(Output::Viscosity)?;
-                let density_slope = if with_slope {
-                    Some(self.get_derivative(
-                        Variable::Density,
-                        Variable::Pressure,
-                        Variable::Enthalpy,
-                    )?)
-                } else {
-                    None
-                };
-
-                Ok(FlowState {
-                    density,
-                    viscosity,
-                    density_slope,
-                    limited,
-                })
+                self.get_single_phase_flow(limited, with_slope)
             }
 
             Region::TwoPhase(saturation) => {
@@ -401,6 +405,61 @@ impl AbstractState {
             rho_liquid,
             rho_vapor,
         }))
+    }
+
+    //==============================================================================================
+    // Function Name: get_single_phase_flow
+    //   Description: Read the flow properties of the flashed single phase state
+    //     Edit Date: Nov 24th, 2026.
+    //==============================================================================================
+    fn get_single_phase_flow(
+        &mut self,
+        limited: bool,
+        with_slope: bool,
+    ) -> Result<FlowState, String> {
+        let density = self.get_output(Output::Density)?;
+        let viscosity = self.get_output(Output::Viscosity)?;
+        let density_slope = if with_slope {
+            Some(self.get_derivative(Variable::Density, Variable::Pressure, Variable::Enthalpy)?)
+        } else {
+            None
+        };
+
+        Ok(FlowState {
+            density,
+            viscosity,
+            density_slope,
+            limited,
+        })
+    }
+
+    //==============================================================================================
+    // Function Name: get_hot_flow_state
+    //   Description: Flash a state and return its flow state if it lies above the dome
+    //     Edit Date: Nov 24th, 2026.
+    //==============================================================================================
+    fn get_hot_flow_state(
+        &mut self,
+        pressure: f64,
+        enthalpy: f64,
+        with_slope: bool,
+    ) -> Option<FlowState> {
+        // Read the Margin of a Glide before the Flash because the Test Changes the State===========
+        let ratio = if self.get_glide().ok()? {
+            GLIDE_HOT_RATIO
+        } else {
+            1.0
+        };
+
+        // Flash the State and Leave Every Refusal to the Lookup of the Region======================
+        let limited = self.set_enthalpy_pressure(enthalpy, pressure).ok()?;
+
+        // Accept Only a Temperature above the Critical Point Plus the Margin=======================
+        let t_critical = self.get_output(Output::CriticalTemperature).ok()?;
+        if self.get_output(Output::Temperature).ok()? <= ratio * t_critical {
+            return None;
+        }
+        self.get_single_phase_flow(limited, with_slope).ok()
     }
 
     //==============================================================================================
@@ -591,5 +650,51 @@ mod tests {
             mu_vapor,
         );
         assert!((high / low - 1.0).abs() < 1e-9, "{low} {high}");
+    }
+
+    //==============================================================================================
+    // Function Name: hot_shortcut_equals_the_lookup_of_the_region
+    //   Description: Check that the shortcut above the dome returns the bits of the lookup
+    //     Edit Date: Nov 24th, 2026.
+    //==============================================================================================
+    #[test]
+    fn hot_shortcut_equals_the_lookup_of_the_region() {
+        for (fluid, p_low, p_high, t_low, t_high) in [
+            ("Air", 1.0e5, 6.0e6, 250.0, 450.0),
+            ("Nitrogen", 1.0e5, 6.0e6, 100.0, 450.0),
+            ("CO2", 1.0e5, 2.0e7, 220.0, 450.0),
+            ("Methane", 1.0e5, 1.0e7, 100.0, 450.0),
+            ("Hydrogen", 1.0e5, 1.0e7, 30.0, 450.0),
+            ("Helium", 1.0e5, 1.0e6, 4.0, 450.0),
+        ] {
+            let mut state = AbstractState::new(fluid).unwrap();
+            let mut hot = 0;
+            for i in 0..=24 {
+                for j in 0..=24 {
+                    let pressure = p_low + (p_high - p_low) * (i as f64) / 24.0;
+                    let t = t_low + (t_high - t_low) * (j as f64) / 24.0;
+                    if state
+                        .set_state(Pair::PressureTemperature, pressure, t)
+                        .is_err()
+                    {
+                        continue;
+                    }
+                    let enthalpy = state.get_output(Output::Enthalpy).unwrap();
+                    for with_slope in [false, true] {
+                        let by_region =
+                            state.get_flow_state_by_region(pressure, enthalpy, with_slope);
+                        let shortcut = state.get_flow_state(pressure, enthalpy, with_slope);
+                        assert_eq!(by_region, shortcut, "{fluid} {pressure} {t}");
+                    }
+                    if state
+                        .get_hot_flow_state(pressure, enthalpy, false)
+                        .is_some()
+                    {
+                        hot += 1;
+                    }
+                }
+            }
+            assert!(hot > 0, "{fluid} never took the shortcut");
+        }
     }
 }

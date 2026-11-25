@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.1 (not released)
+
+- `get_flow_state` flashes the enthalpy and the pressure first and skips the saturation lookup when
+  the temperature lies above the critical temperature (1.1 times that for a fluid with a glide).
+  The returned bits do not change; air at 300 K between 1 and 20 bar takes 20 instead of 32
+  microseconds per call. A state below that temperature takes the unchanged path.
+
 ## 0.3.0
 
 - Breaking: removed `AbstractState::get_two_phase_density_derivative` (0.2.1).
